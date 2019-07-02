@@ -7,3 +7,6 @@ edition = "2018"
 [dependencies]
 rand = "0.7"
 smallvec = "0.6"
+tui = "0.6"
+termion = "1.5"
+failure = "*"
