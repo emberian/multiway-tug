@@ -28,6 +28,11 @@ fn main() -> Result<(), failure::Error> {
     terminal.hide_cursor()?;
 
     let mut read_buf = [0u8; 16];
+    // TODO:
+    // 1. Make the place cards indicate control (shift them towards the controlling player?)
+    // 2. Draw our player always on the bottom
+    // 3. Draw remaining_actions
+    // 4. User input for action selection
     loop {
         terminal.draw(|mut f| {
             let mut other_player_cards = multiway_tug::CardsWidget(&gs.players[0].hand, &gs, true);
