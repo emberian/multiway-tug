@@ -140,7 +140,7 @@ impl GameState {
         self.deck.clear();
         for (place_id, &(val, how_many)) in PLACE_VAL_COUNT.iter().enumerate() {
             for _ in 0..how_many {
-                for _ in 0..val {
+                for _ in 0..(val-1) {
                     self.deck.push(Card(place_id as u8));
                 }
                 self.places[place_id].scores = [0, 0];
