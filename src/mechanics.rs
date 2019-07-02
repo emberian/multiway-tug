@@ -111,8 +111,6 @@ pub trait Behavior {
     fn assign(&mut self, id: PlayerId, cards: [Cards; 2]) -> [(Cards, PlayerId); 2];
 }
 
-static PLACE_VAL_COUNT: [(u8, u8); 4] = [(2, 3), (3, 2), (4, 1), (5, 1)];
-
 impl GameState {
     // A new game state, already reset and ready to play.
     pub fn new(rng: Box<dyn rand::RngCore>) -> GameState {
@@ -138,13 +136,11 @@ impl GameState {
     // Rebuild the deck, reset the place scores, discard one, deal 6 cards to each player, and set all actions as available
     fn reset(&mut self) {
         self.deck.clear();
-        for (place_id, &(val, how_many)) in PLACE_VAL_COUNT.iter().enumerate() {
-            for _ in 0..how_many {
-                for _ in 0..(val-1) {
-                    self.deck.push(Card(place_id as u8));
-                }
-                self.places[place_id].scores = [0, 0];
+        for (place_id, place) in self.places.iter_mut().enumerate() {
+            for _ in 0..place.value {
+                self.deck.push(Card(place_id as u8));
             }
+            place.scores = [0,0];
         }
         self.deck.shuffle(&mut self.rng);
         self.discarded = self.deck.pop(); // Discard one
