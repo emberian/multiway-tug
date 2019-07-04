@@ -5,14 +5,18 @@ use rand::Rng;
 
 type CardVal = u8;
 
-/// Not clone: cards are a physical resource!
-#[derive(PartialOrd, Ord, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub struct Card(pub CardVal);
 
-// there's never more than 7 cards in one place.
+impl Drop for Card {
+    fn drop(&mut self) {
+        unreachable!()
+    }
+}
+
 pub type Cards = SmallVec<[Card; 7]>;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Serialize, Deserialize)]
 pub enum PlayerId {
     First,
     Second,
@@ -46,10 +50,11 @@ impl PlayerId {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Place {
     pub control: Option<PlayerId>,
     pub scores: [u8; 2],
-    pub value: CardVal,
+    pub face_value: CardVal,
 }
 
 impl Place {
@@ -57,18 +62,24 @@ impl Place {
         Place {
             control: None,
             scores: [0, 0],
-            value: val,
+            face_value: val,
         }
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Player {
-    // Actions this player has remaining
-    pub remaining_actions: SmallVec<[Action; 4]>,
     // Cards in their hand
+    #[serde(skip)]
     pub hand: Cards,
-    // Card they secreted for this round
+    // Card they secreted
     pub secret: Option<Card>,
+    // Cards they discarded
+    pub discard: Option<[Card; 2]>,
+    // Card they gifted and the cards they kept.
+    pub gift: Option<(Card, [Card; 2])>,
+    // Cards they gave in competition. Second is the ones they kept.
+    pub competition: Option<([Card; 2], [Card; 2])>,
     // Their id (FIXME unused: in case we need a reverse lookup?)
     pub id: PlayerId,
 }
@@ -76,14 +87,17 @@ pub struct Player {
 impl Player {
     pub fn new(id: PlayerId) -> Player {
         Player {
-            remaining_actions: smallvec![],
             hand: smallvec![],
             secret: None,
+            discard: None,
+            gift: None,
+            competition: None,
             id: id,
         }
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct GameState {
     /// Deck of resources
     pub deck: Vec<Card>,
@@ -94,26 +108,42 @@ pub struct GameState {
     /// Card that was discarded at the start of the game
     pub discarded: Option<Card>,
     /// Randomness
-    pub rng: Box<dyn rand::RngCore>,
+    pub rng: rand_pcg::Pcg64,
+    pub current_player: PlayerId,
 }
 
 #[derive(PartialEq, Eq)]
 pub enum Action {
-    Secret,
-    Discard,
-    Gift,
-    Competition,
-}
-
-pub trait Behavior {
-    fn remove_n_cards(&mut self, id: PlayerId, n: usize, hand: &mut Cards) -> Cards;
-    fn request_action(&mut self, gs: &GameState, id: PlayerId) -> Action;
-    fn assign(&mut self, id: PlayerId, cards: [Cards; 2]) -> [(Cards, PlayerId); 2];
+    Secret {
+        card: CardVal,
+    },
+    Discard {
+        cards: [CardVal; 2],
+    },
+    Gift {
+        for_player: [CardVal; 2],
+        for_other: CardVal,
+    },
+    Competition {
+        for_player: [CardVal; 2],
+        for_other: [CardVal; 2],
+    },
 }
 
 impl GameState {
+    pub fn clone(&self) -> GameState {
+        let mut buf = [0u8; 512];
+        let mut cursor = std::io::Cursor::new(&mut buf[..]);
+        serde_cbor::to_writer(&mut cursor, self);
+        let len = cursor.position() as usize;
+        let almost_new: GameState = serde_cbor::from_reader(std::io::Cursor::new(&buf[..len]))
+            .expect("can't roundtrip? really?");
+        almost_new
+    }
+
     // A new game state, already reset and ready to play.
-    pub fn new(rng: Box<dyn rand::RngCore>) -> GameState {
+    pub fn new(mut rng: rand_pcg::Pcg64) -> GameState {
+        let mut deck = vec![];
         let mut gs = GameState {
             deck: vec![],
             places: [
@@ -127,20 +157,47 @@ impl GameState {
             ],
             players: [Player::new(PlayerId::First), Player::new(PlayerId::Second)],
             discarded: None,
+            current_player: PlayerId::of_index(rng.gen_range(0, 2)),
             rng: rng,
         };
-        gs.reset();
+        for (place_idx, place) in gs.places.iter().enumerate() {
+            for _ in 0..place.face_value {
+                deck.push(Card(place_idx as u8))
+            }
+        }
+        gs.deck = deck;
+        gs.deck.shuffle(&mut gs.rng);
+        gs.discarded = gs.deck.pop(); // Discard one
         gs
     }
 
     // Rebuild the deck, reset the place scores, discard one, deal 6 cards to each player, and set all actions as available
-    fn reset(&mut self) {
-        self.deck.clear();
-        for (place_id, place) in self.places.iter_mut().enumerate() {
-            for _ in 0..place.value {
-                self.deck.push(Card(place_id as u8));
-            }
-            place.scores = [0,0];
+    // Panics if the game isn't in a final state.
+    fn add_two(&mut self, [a, b]: [Card; 2]) {
+        self.deck.push(a);
+        self.deck.push(b);
+    }
+
+    fn drain_player(&mut self, pid: PlayerId) {
+        self.deck
+            .push(self.players[pid.index()].secret.take().unwrap());
+        let discarded = self.players[pid.index()].discard.take().unwrap();
+        self.add_two(discarded);
+        let (their_card, our_cards) = self.players[pid.index()].gift.take().unwrap();
+        self.deck.push(their_card);
+        self.add_two(our_cards);
+        let (their_cards, our_cards) = self.players[pid.index()].competition.take().unwrap();
+        self.add_two(their_cards);
+        self.add_two(our_cards);
+    }
+
+    fn reset(&mut self, for_new: bool) {
+        assert!(self.deck.len() == 0);
+        self.deck.push(self.discarded.take().unwrap());
+        self.drain_player(self.current_player);
+        self.drain_player(self.current_player.other());
+        for place in &mut self.places {
+            place.scores = [0, 0];
         }
         self.deck.shuffle(&mut self.rng);
         self.discarded = self.deck.pop(); // Discard one
@@ -150,18 +207,6 @@ impl GameState {
         for _ in 0..6 {
             self.players[1].hand.push(self.deck.pop().unwrap());
         }
-        self.players[0].remaining_actions = smallvec![
-            Action::Secret,
-            Action::Discard,
-            Action::Gift,
-            Action::Competition
-        ];
-        self.players[1].remaining_actions = smallvec![
-            Action::Secret,
-            Action::Discard,
-            Action::Gift,
-            Action::Competition
-        ];
     }
 
     // Score the places, determining if there's a winner.
@@ -180,7 +225,7 @@ impl GameState {
                 .fold(([0, 0], [0, 0]), |(mut score, mut places), place| {
                     match place.control {
                         Some(pid) => {
-                            score[pid.index()] += place.value;
+                            score[pid.index()] += place.face_value;
                             places[pid.index()] += 1;
                         }
                         None => {}
@@ -204,81 +249,72 @@ impl GameState {
         None
     }
 
-    fn place_cards(&mut self, pid: PlayerId, cards: &Cards) {
-        for card in cards {
-            self.places[card.0 as usize].scores[pid.index()] += 1;
-        }
+    fn place_card(&mut self, pid: PlayerId, card: CardVal) {
+        self.places[card as usize].scores[pid.index()] += 1;
     }
 
-    pub fn play<B: Behavior>(mut self, b: &mut B) -> PlayerId {
-        let mut current_player = if self.rng.gen::<bool>() {
-            PlayerId::First
-        } else {
-            PlayerId::Second
+    fn us(&mut self) -> &mut Player {
+        &mut self.players[self.current_player.index()]
+    }
+    fn them(&mut self) -> &mut Player {
+        &mut self.players[self.current_player.other().index()]
+    }
+
+    pub fn apply_action(&mut self, action: Action) {
+        let us_id = self.current_player;
+        let them_id = self.current_player.other();
+        let remove = |hand: &mut Cards, cv: CardVal| {
+            let pos = hand
+                .iter()
+                .position(|x| x.0 == cv)
+                .expect("action mentioned card not in hand");
+            hand.remove(pos)
         };
-        loop {
-            let action = b.request_action(&self, current_player);
-            match action {
-                Action::Secret => {
-                    assert!(self.players[current_player.index()].secret.is_none());
-                    let card = b.remove_n_cards(
-                        current_player,
-                        1,
-                        &mut self.players[current_player.index()].hand,
-                    );
-                    self.players[current_player.index()].secret =
-                        Some(card.into_iter().next().unwrap());
-                }
-                Action::Discard => {
-                    let _ = b.remove_n_cards(
-                        current_player,
-                        2,
-                        &mut self.players[current_player.index()].hand,
-                    );
-                }
-                Action::Gift => {
-                    let mut cards = b.remove_n_cards(
-                        current_player,
-                        3,
-                        &mut self.players[current_player.index()].hand,
-                    );
-                    let for_other = b.remove_n_cards(current_player.other(), 1, &mut cards);
-                    self.place_cards(current_player, &cards);
-                    self.place_cards(current_player.other(), &for_other);
-                }
-                Action::Competition => {
-                    let first_set = b.remove_n_cards(
-                        current_player,
-                        2,
-                        &mut self.players[current_player.index()].hand,
-                    );
-                    let second_set = b.remove_n_cards(
-                        current_player,
-                        2,
-                        &mut self.players[current_player.index()].hand,
-                    );
-                    for (hand, player) in b
-                        .assign(current_player.other(), [first_set, second_set])
-                        .iter()
-                    {
-                        self.place_cards(*player, hand);
-                    }
-                }
+        match action {
+            Action::Secret { card } => {
+                let card = remove(&mut self.us().hand, card);
+                self.us().secret = Some(card);
             }
-            let rem = &mut self.players[current_player.index()].remaining_actions;
-            rem.swap_remove(
-                rem.iter()
-                    .position(|a| a == &action)
-                    .expect("request_action gave unavailable action"),
-            );
-            current_player.swap();
-            if self.players.iter().all(|p| p.remaining_actions.len() == 0) {
-                match self.update_control_and_score() {
-                    Some(player_id) => return player_id,
-                    None => continue,
-                }
+            Action::Discard { cards } => {
+                let cards = [
+                    remove(&mut self.us().hand, cards[0]),
+                    remove(&mut self.us().hand, cards[1]),
+                ];
+                self.us().discard = Some(cards);
             }
-            self.reset();
+            Action::Gift {
+                for_player,
+                for_other,
+            } => {
+                let for_player = [
+                    remove(&mut self.us().hand, for_player[0]),
+                    remove(&mut self.us().hand, for_player[1]),
+                ];
+                let for_other = remove(&mut self.us().hand, for_other);
+                self.place_card(us_id, for_player[0].0);
+                self.place_card(us_id, for_player[1].0);
+                self.place_card(them_id, for_other.0);
+                self.us().gift = Some((for_other, for_player));
+            }
+            Action::Competition {
+                for_player,
+                for_other,
+            } => {
+                let for_player = [
+                    remove(&mut self.us().hand, for_player[0]),
+                    remove(&mut self.us().hand, for_player[1]),
+                ];
+                let for_other = [
+                    remove(&mut self.them().hand, for_other[0]),
+                    remove(&mut self.them().hand, for_other[1]),
+                ];
+                self.place_card(us_id, for_player[0].0);
+                self.place_card(us_id, for_player[1].0);
+                self.place_card(them_id, for_other[0].0);
+                self.place_card(them_id, for_other[1].0);
+                self.us().competition = Some((for_other, for_player));
+            }
         }
+        self.current_player.swap();
     }
 }

@@ -16,7 +16,7 @@ use std::io::Read;
 struct TuiBehavior();
 
 fn main() -> Result<(), failure::Error> {
-    let mut gs = multiway_tug::mechanics::GameState::new(Box::new(rand::thread_rng()));
+    let mut gs = multiway_tug::mechanics::GameState::new(rand::SeedableRng::from_entropy());
 
     let stdout = std::io::stdout().into_raw_mode()?;
     let stdout = MouseTerminal::from(stdout);
@@ -41,18 +41,23 @@ fn main() -> Result<(), failure::Error> {
             f.render(&mut other_player_cards, Rect::new(24 - (ox / 2), 0, ox, oy));
             for (place_idx, place) in gs.places.iter().enumerate() {
                 let place_rect = Rect::new(7 * (place_idx as u16), 3, 7, 21);
-                f.render(&mut multiway_tug::PlaceWidget(place, place_idx as u8), place_rect);
+                f.render(
+                    &mut multiway_tug::PlaceWidget(place, place_idx as u8),
+                    place_rect,
+                );
             }
             let (ox, oy) = our_cards.bounds();
             f.render(&mut our_cards, Rect::new(24 - (ox / 2), 14, ox, oy));
         });
         stdin.read(&mut read_buf)?;
         match std::str::from_utf8(&read_buf[0..1])?.parse::<usize>() {
-            Ok(v) =>  {
+            Ok(v) => {
                 let idx: usize = gs.rng.gen_range(0, 2);
                 gs.places[v].scores[idx] += 1;
-            },
-            e => { println!("Error: {:?}", e); },
+            }
+            e => {
+                println!("Error: {:?}", e);
+            }
         }
         if read_buf[0] == b'q' {
             break;
