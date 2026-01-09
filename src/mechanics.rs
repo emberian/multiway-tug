@@ -70,7 +70,6 @@ impl Place {
 #[derive(Serialize, Deserialize)]
 pub struct Player {
     // Cards in their hand
-    #[serde(skip)]
     pub hand: Cards,
     // Card they secreted
     pub secret: Option<Card>,
@@ -168,6 +167,12 @@ impl GameState {
         gs.deck = deck;
         gs.deck.shuffle(&mut gs.rng);
         gs.discarded = gs.deck.pop(); // Discard one
+        for _ in 0..6 {
+            gs.players[0].hand.push(gs.deck.pop().unwrap());
+        }
+        for _ in 0..6 {
+            gs.players[1].hand.push(gs.deck.pop().unwrap());
+        }
         gs
     }
 
@@ -191,7 +196,7 @@ impl GameState {
         self.add_two(our_cards);
     }
 
-    fn reset(&mut self, for_new: bool) {
+    fn reset(&mut self) {
         assert!(self.deck.len() == 0);
         self.deck.push(self.discarded.take().unwrap());
         self.drain_player(self.current_player);
@@ -209,8 +214,19 @@ impl GameState {
         }
     }
 
-    // Score the places, determining if there's a winner.
-    fn update_control_and_score(&mut self) -> Option<PlayerId> {
+    /// Returns true if both players have used all 4 actions.
+    pub fn round_complete(&self) -> bool {
+        self.players.iter().all(|p| {
+            p.secret.is_some()
+                && p.discard.is_some()
+                && p.gift.is_some()
+                && p.competition.is_some()
+        })
+    }
+
+    /// Score the places, determining if there's a winner.
+    /// Call this when round_complete() returns true.
+    pub fn update_control_and_score(&mut self) -> Option<PlayerId> {
         for place in &mut self.places {
             if place.scores[0] > place.scores[1] {
                 place.control = Some(PlayerId::First);
@@ -300,13 +316,15 @@ impl GameState {
                 for_player,
                 for_other,
             } => {
+                // In Competition, current player offers 4 cards from their hand.
+                // Opponent picks 2 (for_other), current player keeps remaining 2 (for_player).
                 let for_player = [
                     remove(&mut self.us().hand, for_player[0]),
                     remove(&mut self.us().hand, for_player[1]),
                 ];
                 let for_other = [
-                    remove(&mut self.them().hand, for_other[0]),
-                    remove(&mut self.them().hand, for_other[1]),
+                    remove(&mut self.us().hand, for_other[0]),
+                    remove(&mut self.us().hand, for_other[1]),
                 ];
                 self.place_card(us_id, for_player[0].0);
                 self.place_card(us_id, for_player[1].0);
