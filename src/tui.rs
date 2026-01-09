@@ -1,10 +1,9 @@
-extern crate tui;
-
 use std::iter::repeat;
-use tui::buffer::Buffer;
-use tui::layout::Rect;
-use tui::style::Style;
-use tui::widgets::Widget;
+
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::widgets::Widget;
 
 pub fn draw_card(val: char, count: usize) -> String {
     if count != 0 {
@@ -43,11 +42,12 @@ impl<'a> CardsWidget<'a> {
         (3 * (self.0.len() as u16), 3)
     }
 }
+
 impl<'a> Widget for CardsWidget<'a> {
-    fn draw(&mut self, area: Rect, buf: &mut Buffer) {
+    fn render(self, area: Rect, buf: &mut Buffer) {
         for (card_idx, card) in self.0.iter().enumerate() {
             let color = if self.2 {
-                tui::style::Color::Reset
+                Color::Reset
             } else {
                 color_from_place(card.0)
             };
@@ -70,25 +70,25 @@ impl<'a> Widget for CardsWidget<'a> {
         }
     }
 }
+
 pub struct PlaceWidget<'a>(pub &'a crate::mechanics::Place, pub u8);
 
-fn color_from_place(pl: u8) -> tui::style::Color {
-    use tui::style::Color::*;
+fn color_from_place(pl: u8) -> Color {
     match pl {
-        0 => Red,
-        1 => Green,
-        2 => Yellow,
-        3 => Blue,
-        4 => Magenta,
-        5 => Cyan,
-        6 => Reset,
+        0 => Color::Red,
+        1 => Color::Green,
+        2 => Color::Yellow,
+        3 => Color::Blue,
+        4 => Color::Magenta,
+        5 => Color::Cyan,
+        6 => Color::Reset,
         _ => panic!("Too many places to color :("),
     }
 }
 
 impl<'a> Widget for PlaceWidget<'a> {
     // A place is built around 7x7 squares on top of each other, forming a 7x21 area.
-    fn draw(&mut self, area: Rect, buf: &mut Buffer) {
+    fn render(self, area: Rect, buf: &mut Buffer) {
         // TODO: consider being more efficient.
         let top_square = draw_card(char_of_digit(self.0.face_value), self.0.scores[0] as usize);
         let main_square = format!(

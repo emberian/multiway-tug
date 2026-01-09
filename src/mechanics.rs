@@ -1,7 +1,7 @@
-use smallvec::SmallVec;
-
 use rand::seq::SliceRandom;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
+use smallvec::{smallvec, SmallVec};
 
 type CardVal = u8;
 
@@ -131,13 +131,9 @@ pub enum Action {
 
 impl GameState {
     pub fn clone(&self) -> GameState {
-        let mut buf = [0u8; 512];
-        let mut cursor = std::io::Cursor::new(&mut buf[..]);
-        serde_cbor::to_writer(&mut cursor, self);
-        let len = cursor.position() as usize;
-        let almost_new: GameState = serde_cbor::from_reader(std::io::Cursor::new(&buf[..len]))
-            .expect("can't roundtrip? really?");
-        almost_new
+        let mut buf = Vec::new();
+        ciborium::into_writer(self, &mut buf).expect("serialization failed");
+        ciborium::from_reader(&buf[..]).expect("can't roundtrip? really?")
     }
 
     // A new game state, already reset and ready to play.
@@ -156,7 +152,7 @@ impl GameState {
             ],
             players: [Player::new(PlayerId::First), Player::new(PlayerId::Second)],
             discarded: None,
-            current_player: PlayerId::of_index(rng.gen_range(0, 2)),
+            current_player: PlayerId::of_index(rng.gen_range(0..2)),
             rng: rng,
         };
         for (place_idx, place) in gs.places.iter().enumerate() {
